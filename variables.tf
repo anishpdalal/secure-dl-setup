@@ -19,17 +19,22 @@ variable "cidr" {
 variable "zones" {
   description = "subregions to place VPC resources in"
   type        = list(string)
-  default     = ["us-east-1a","us-east-1b"]
+  default     = ["us-east-1a"]
 }
 
 variable "pri_subnets" {
   type            = list(string)
-  default         = ["10.0.1.0/24", "10.0.2.0/24"]
+  default         = ["10.0.1.0/24"]
 }
 
 variable "pub_subnets" {
   type            = list(string)
-  default         = ["10.0.101.0/24", "10.0.102.0/24"]
+  default         = ["10.0.101.0/24"]
+}
+
+variable "data_bucket" {
+  description = "s3 bucket that will store data for ML stuff"
+  type        = string
 }
 
 variable "public_key_bucket" {
@@ -47,4 +52,9 @@ variable "key_pairs" {
         name = string,
         public_key_path = string
   }))
+}
+
+variable "service_ports" {
+  type              = list(number)
+  default           = [22, 6006, 8888]
 }

@@ -2,13 +2,6 @@ provider "aws" {
   region = var.region
 }
 
-locals {
-  jupyter_port     = 8888
-  tensorboard_port = 6006
-  ssh_port         = 22
-  protocol         = "tcp"
-}
-
 module "vpc" {
   source = "terraform-aws-modules/vpc/aws"
 
@@ -28,6 +21,11 @@ resource "aws_s3_bucket" "ssh_bucket" {
   acl    = "private"
 }
 
+resource "aws_s3_bucket" "data_bucket" {
+  bucket = var.data_bucket
+  acl    = "private"
+}
+
 resource "aws_s3_bucket_object" "ssh_public_keys" {
   for_each   = {for pair in var.key_pairs : pair.name => pair}
 
@@ -39,8 +37,8 @@ resource "aws_s3_bucket_object" "ssh_public_keys" {
   depends_on = [aws_s3_bucket.ssh_bucket]
 }
 
-resource "aws_iam_role" "ec2_role" {
-  name = "ec2_role"
+resource "aws_iam_role" "bastion_ec2_role" {
+  name = "bastion_ec2_role"
   path = "/"
 
   assume_role_policy = <<EOF
@@ -58,26 +56,87 @@ resource "aws_iam_role" "ec2_role" {
   EOF
 }
 
-resource "aws_iam_instance_profile" "profile" {
-  name = "s3_readonly"
-  role = aws_iam_role.ec2_role.name
+resource "aws_iam_role" "dev_instance_ec2_role" {
+  name = "dev_instance_ec2_role"
+  path = "/"
+
+  assume_role_policy = <<EOF
+{
+	"Version": "2012-10-17",
+	"Statement": [{
+		"Action": "sts:AssumeRole",
+		"Principal": {
+			"Service": "ec2.amazonaws.com"
+		},
+		"Effect": "Allow",
+		"Sid": ""
+	}]
+}
+  EOF
 }
 
-resource "aws_iam_role_policy" "policy" {
+resource "aws_iam_instance_profile" "bastion_instance_profile" {
+  name = "bastion_iam_instance_profile"
+  role = aws_iam_role.bastion_ec2_role.name
+}
+
+resource "aws_iam_instance_profile" "dev_instance_profile" {
+  name = "dev_iam_instance_profile"
+  role = aws_iam_role.dev_instance_ec2_role.name
+}
+
+resource "aws_iam_role_policy" "s3_readonly_policy" {
   name = "s3_read_only_policy"
-  role = aws_iam_role.ec2_role.id
+  role = aws_iam_role.bastion_ec2_role.id
 
   policy = <<-EOF
   {
     "Version": "2012-10-17",
-    "Statement": [{
-      "Effect": "Allow",
-      "Action": [
-        "s3:Get*",
-        "s3:List*"
-      ],
-      "Resource": "*"
-    }]
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:List*"
+        ],
+        "Resource": ["${aws_s3_bucket.ssh_bucket.arn}"]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:Get*"
+        ],
+        "Resource": ["${aws_s3_bucket.ssh_bucket.arn}/*"]
+      }
+    ]
+  }
+  EOF
+}
+
+resource "aws_iam_role_policy" "s3_read_write_policy" {
+  name = "s3_read_write_policy"
+  role = aws_iam_role.dev_instance_ec2_role.id
+
+  policy = <<-EOF
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:List*"
+        ],
+        "Resource": ["${aws_s3_bucket.data_bucket.arn}"]
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:Get*",
+          "s3:Put*",
+          "s3:Delete*"
+        ],
+        "Resource": ["${aws_s3_bucket.data_bucket.arn}/*"]
+      }
+    ]
   }
   EOF
 }
@@ -86,7 +145,7 @@ module "bastion" {
   source                      = "github.com/terraform-community-modules/tf_aws_bastion_s3_keys"
   ami                         = "ami-0817d428a6fb68645"
   region                      = var.region
-  iam_instance_profile        = aws_iam_instance_profile.profile.name
+  iam_instance_profile        = aws_iam_instance_profile.bastion_instance_profile.name
   s3_bucket_name              = aws_s3_bucket.ssh_bucket.bucket
   vpc_id                      = module.vpc.vpc_id
   subnet_ids                  = module.vpc.public_subnets
@@ -104,25 +163,14 @@ resource "aws_security_group" "sg" {
   name   = "ml_security_group"
   vpc_id =  module.vpc.vpc_id
 
-  ingress {
-    from_port   = local.jupyter_port
-    to_port     = local.jupyter_port
-    protocol    = local.protocol
-    cidr_blocks = [module.vpc.vpc_cidr_block]
-  }
-
-  ingress {
-    from_port   = local.tensorboard_port
-    to_port     = local.tensorboard_port
-    protocol    = local.protocol
-    cidr_blocks = [module.vpc.vpc_cidr_block]
-  }
-
-  ingress {
-    from_port   = local.ssh_port
-    to_port     = local.ssh_port
-    protocol    = local.protocol
-    cidr_blocks = [module.vpc.vpc_cidr_block]
+  dynamic "ingress" {
+    for_each = var.service_ports
+    content {
+      from_port = ingress.value
+      to_port   = ingress.value
+      protocol  = "tcp"
+      cidr_blocks = [module.vpc.vpc_cidr_block]
+    }
   }
 
   egress {
@@ -139,7 +187,7 @@ resource "aws_instance" "instance" {
   instance_type          = var.instance_type
   subnet_id              = module.vpc.private_subnets[0]
   vpc_security_group_ids = [aws_security_group.sg.id]
-  iam_instance_profile   = aws_iam_instance_profile.profile.name
+  iam_instance_profile   = aws_iam_instance_profile.dev_instance_profile.name
   key_name               = "${each.key}-public-key"
 
   user_data = file("userdata.sh")

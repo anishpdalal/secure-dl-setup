@@ -1,3 +1,5 @@
 .terraform
 public_keys/*.pub
 *.tfvars
+terraform.tfstate
+terraform.tfstate.backup
