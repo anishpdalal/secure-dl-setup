@@ -1,5 +1,5 @@
 provider "aws" {
-  region = "us-east-1"
+  region = var.region
 }
 
 module "private_vpc" {
@@ -10,5 +10,4 @@ module "private_vpc" {
     availability_zones = var.availability_zones
     private_subnets    = var.private_subnets
     public_subnets     = var.public_subnets
-
 }
